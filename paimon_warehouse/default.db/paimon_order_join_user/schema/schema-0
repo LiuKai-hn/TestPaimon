@@ -1,0 +1,39 @@
+{
+  "version" : 2,
+  "id" : 0,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "order_id",
+    "type" : "INT NOT NULL"
+  }, {
+    "id" : 1,
+    "name" : "user_id",
+    "type" : "INT"
+  }, {
+    "id" : 2,
+    "name" : "user_name",
+    "type" : "STRING"
+  }, {
+    "id" : 3,
+    "name" : "city",
+    "type" : "STRING"
+  }, {
+    "id" : 4,
+    "name" : "order_amount",
+    "type" : "DECIMAL(10, 2)"
+  }, {
+    "id" : 5,
+    "name" : "create_time",
+    "type" : "TIMESTAMP(6)"
+  } ],
+  "highestFieldId" : 5,
+  "partitionKeys" : [ ],
+  "primaryKeys" : [ "order_id" ],
+  "options" : {
+    "write-mode" : "change-log",
+    "snapshot.time-retained" : "1 h",
+    "commit.interval" : "3 s"
+  },
+  "comment" : "",
+  "timeMillis" : 1776684998289
+}

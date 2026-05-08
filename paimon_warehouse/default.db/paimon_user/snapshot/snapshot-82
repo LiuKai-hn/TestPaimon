@@ -1,0 +1,18 @@
+{
+  "version" : 3,
+  "id" : 82,
+  "schemaId" : 0,
+  "baseManifestList" : "manifest-list-ebe0d887-a866-4126-9dfa-a8f3a1a125d0-162",
+  "deltaManifestList" : "manifest-list-ebe0d887-a866-4126-9dfa-a8f3a1a125d0-163",
+  "changelogManifestList" : null,
+  "indexManifest" : "index-manifest-bb8a5f2b-e825-4743-a80a-f563000d8d99-0",
+  "commitUser" : "6ec5d21e-c631-4c1b-9d88-9bb44c8565bb",
+  "commitIdentifier" : 66,
+  "commitKind" : "COMPACT",
+  "timeMillis" : 1776685295078,
+  "logOffsets" : { },
+  "totalRecordCount" : 20,
+  "deltaRecordCount" : -40,
+  "changelogRecordCount" : 0,
+  "watermark" : -9223372036854775808
+}

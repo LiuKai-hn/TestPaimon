@@ -1,0 +1,38 @@
+{
+  "version" : 2,
+  "id" : 0,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "user_id",
+    "type" : "INT NOT NULL"
+  }, {
+    "id" : 1,
+    "name" : "name",
+    "type" : "STRING"
+  }, {
+    "id" : 2,
+    "name" : "level",
+    "type" : "STRING"
+  }, {
+    "id" : 3,
+    "name" : "city",
+    "type" : "STRING"
+  }, {
+    "id" : 4,
+    "name" : "update_time",
+    "type" : "TIMESTAMP(6)"
+  } ],
+  "highestFieldId" : 4,
+  "partitionKeys" : [ ],
+  "primaryKeys" : [ "user_id" ],
+  "options" : {
+    "write-mode" : "change-log",
+    "merge-engine" : "partial-update",
+    "changelog-producer" : "full-compaction",
+    "partial-update.ignore-delete" : "true",
+    "commit.interval" : "10s",
+    "changelog-mode" : "full"
+  },
+  "comment" : "",
+  "timeMillis" : 1776766786282
+}

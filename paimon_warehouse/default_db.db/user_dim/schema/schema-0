@@ -1,0 +1,31 @@
+{
+  "version" : 2,
+  "id" : 0,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "user_id",
+    "type" : "INT NOT NULL"
+  }, {
+    "id" : 1,
+    "name" : "name",
+    "type" : "STRING"
+  }, {
+    "id" : 2,
+    "name" : "level",
+    "type" : "STRING"
+  }, {
+    "id" : 3,
+    "name" : "city",
+    "type" : "STRING"
+  } ],
+  "highestFieldId" : 3,
+  "partitionKeys" : [ ],
+  "primaryKeys" : [ "user_id" ],
+  "options" : {
+    "write-mode" : "change-log",
+    "commit.interval" : "1 s",
+    "changelog-mode" : "full"
+  },
+  "comment" : "",
+  "timeMillis" : 1776740179506
+}
