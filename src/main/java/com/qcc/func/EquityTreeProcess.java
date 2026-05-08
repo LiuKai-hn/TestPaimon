@@ -24,6 +24,8 @@ import java.util.Set;
  * 功能：把所有公司的投资关系 构建成 一颗完整的嵌套JSON树
  * 解决：上海XX 能完整嵌套 杭州XX → 张三、李四
  * 解决：环路问题 + 流处理时序问题
+ * 这种方式 有巨大的bug:
+ * 假如上海XX贸易的股东穿透已经生成了，杭州XX科技公司的股东变更了，比如增加了一个自然人或者企业等，那么上海这家公司的股权json是不是不会有变化，这样逻辑是不是有问题
  */
 public class EquityTreeProcess extends KeyedProcessFunction<String, EquityChange, CompanyNode> {
 

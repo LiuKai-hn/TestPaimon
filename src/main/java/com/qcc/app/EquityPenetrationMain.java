@@ -3,6 +3,7 @@ package com.qcc.app;
 
 import com.qcc.func.EquityTreeProcess;
 import com.qcc.func.FinalEquityTreeProcess;
+import com.qcc.func.FinalEquityTreeProcessV2;
 import com.qcc.pojo.CompanyNode;
 import com.qcc.pojo.EquityChange;
 import com.qcc.utils.JsonUtil;
@@ -45,7 +46,7 @@ public class EquityPenetrationMain {
         // 全局统一存储 → 一次性输出完整树
         DataStream<CompanyNode> result = source
                 .keyBy(e -> "00") // 全部数据打入分区
-                .process(new FinalEquityTreeProcess());
+                .process(new FinalEquityTreeProcessV2());
 
         result.map(JsonUtil::toJson).print("最终正确输出");
         // 执行

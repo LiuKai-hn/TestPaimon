@@ -25,6 +25,8 @@ import java.util.*;
  * 4. 无全量遍历
  * 5. 状态极小
  * 6. 可直接上线
+ * 这种方式 有巨大的bug:
+ * 假如上海XX贸易的股东穿透已经生成了，杭州XX科技公司的股东变更了，比如增加了一个自然人或者企业等，那么上海这家公司的股权json是不是不会有变化，这样逻辑是不是有问题
  */
 public class FinalEquityTreeProcess extends KeyedProcessFunction<String, EquityChange, CompanyNode> {
 
