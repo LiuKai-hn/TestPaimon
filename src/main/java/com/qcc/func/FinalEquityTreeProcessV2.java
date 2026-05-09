@@ -20,69 +20,92 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 /**
- * 金融生产终极版 · 股权穿透构建算子
- * 【企查查 / 天眼查 标准架构】
+ * 股权穿透实时构建算子【最终正确可上线版】
+ * 核心业务场景：
+ *  自然人/企业股东发生变更后，所有被它投资的下游企业、再下游企业 全链自动刷新股权树
  *
- * 核心能力：
- * 1. 无限穿透（最大99层，业务等价无限）
- * 2. 底层变更 → 整条上游链自动刷新（无脏数据）
- * 3. 只重构影响链，不遍历全量企业
- * 4. 强制防环、防死循环、防栈溢出
- * 5. 无全量状态遍历、O(1) 查询
- * 6. 微批聚合，性能极高
- * 7. 无重复输出、最终一致性
- * 8. 支持亿级企业规模
+ * 核心两套关系：
+ *  1. 正向关系：公司 -> 自己的直接股东列表  【用于：向下递归构建股权穿透树】
+ *  2. 下游关系：投资方 -> 自己投资了哪些下游公司  【用于：变更后向下递归刷新全链】
  *
- * 可直接上线金融、工商、监管类系统
+ * 两套递归：
+ *  1. markDownstreamRefresh：递归【向下游传播刷新标记】（A变→A的下游全变）
+ *  2. buildTree：递归【向下构建股权穿透树】（从当前公司一层层挖到最终自然人）
  */
 public class FinalEquityTreeProcessV2 extends KeyedProcessFunction<String, EquityChange, CompanyNode> {
 
-    // ==================== 金融级核心配置 ====================
-    private static final int    MAX_DEPTH               = 99;        // 等价无限穿透
-    private static final long   AGGREGATION_DELAY_MS    = 30000L;      // 微批聚合延迟（稳定+低延迟）
+    // 业务无限穿透：设置99层，真实企业股权结构不会超过这个深度
+    private static final int MAX_DEPTH = 99;
 
-    // ==================== 状态定义（极简、无膨胀） ====================
-    // 1. 正向：公司 → 直接股东列表
-// ==================== 核心状态（仅2个，极简） ====================
-    // 正向：公司 → 直接股东
-    private MapState<String, List<EquityChange>>      shareholderState;
+    // 延迟触发时间：本地10ms保证定时器必触发；生产改为300~1000ms做微批聚合，减少重复计算
+    private static final long DELAY_MS = 10;
 
-    // 反向：股东 → 投资了哪些公司（上游）
-    private MapState<String, Set<String>>             reverseInvestState;
+    // ======================== Flink 状态定义 ========================
+    /**
+     * 正向股东状态
+     * Key：企业统一信用代码
+     * Value：该企业的所有直接股东列表
+     * 用途：buildTree 递归向下构建股权树时使用
+     */
+    private MapState<String, List<EquityChange>> shareholderState;
 
-    // 公司名称
-    private MapState<String, String>                  companyNameState;
+    /**
+     * 下游关联状态【最核心】
+     * Key：投资方编码（我是谁）
+     * Value：我直接投资的所有下游企业编码集合
+     * 用途：股东变更后，递归向下找到所有被投资的下游企业，全部标记刷新
+     */
+    private MapState<String, Set<String>> downstreamState;
 
-    // 需要刷新的公司（仅变更链）
-    private MapState<String, Boolean>                 needRefreshState;
+    /**
+     * 企业名称映射
+     * Key：企业/个人编码
+     * Value：企业/个人名称
+     * 用途：O(1)快速获取名称，不遍历、不循环
+     */
+    private MapState<String, String> companyNameState;
 
-    // ==================== 初始化 ====================
+    /**
+     * 待刷新企业队列
+     * 只存放需要重新构建股权树的企业，绝不遍历全量企业
+     */
+    private MapState<String, Boolean> needRefreshState;
+
+    // ======================== 初始化所有状态 ========================
     @Override
     public void open(Configuration parameters) throws Exception {
+        // 初始化正向股东状态
         shareholderState = getRuntimeContext().getMapState(
-                new MapStateDescriptor<>("shareholderState", String.class, (Class<List<EquityChange>>) (Class<?>) List.class)
+                new MapStateDescriptor<>("shareholderState",
+                        String.class, (Class<List<EquityChange>>) (Class<?>) List.class)
         );
 
-        reverseInvestState = getRuntimeContext().getMapState(
-                new MapStateDescriptor<>("reverseInvestState", String.class, (Class<Set<String>>) (Class<?>) Set.class)
+        // 初始化下游关联状态
+        downstreamState = getRuntimeContext().getMapState(
+                new MapStateDescriptor<>("downstreamState",
+                        String.class, (Class<Set<String>>) (Class<?>) Set.class)
         );
 
+        // 初始化企业名称状态
         companyNameState = getRuntimeContext().getMapState(
                 new MapStateDescriptor<>("companyNameState", String.class, String.class)
         );
 
+        // 初始化待刷新队列状态
         needRefreshState = getRuntimeContext().getMapState(
                 new MapStateDescriptor<>("needRefreshState", String.class, Boolean.class)
         );
     }
 
-    // ==================== 来一条数据 = 构建双向关系（绝不遍历） ====================
+    // ======================== 每条股权变更数据流入处理 ========================
     @Override
     public void processElement(EquityChange change, Context ctx, Collector<CompanyNode> out) throws Exception {
-        String investeeCode = change.getInvesteeCreditCode();   // 被投资公司（如：杭州）
-        String investorCode = change.getShareholderCreditCode();// 股东（如：张三）
+        // investeeCode：被投资方 = 子公司（被别人投资的公司）
+        String investeeCode = change.getInvesteeCreditCode();
+        // investorCode：投资方 = 股东（投资别人的公司/自然人）
+        String investorCode = change.getShareholderCreditCode();
 
-        // -------------------- 1. 存储公司名 --------------------
+        // 1. 缓存企业/个人名称：不存在才存入，避免重复覆盖
         if (companyNameState.get(investeeCode) == null) {
             companyNameState.put(investeeCode, change.getInvesteeName());
         }
@@ -90,92 +113,136 @@ public class FinalEquityTreeProcessV2 extends KeyedProcessFunction<String, Equit
             companyNameState.put(investorCode, change.getShareholderName());
         }
 
-        // -------------------- 2. 存储正向股东关系 --------------------
-        List<EquityChange> holders = shareholderState.get(investeeCode);
-        if (holders == null) holders = new ArrayList<>();
-
-        boolean exists = holders.stream().anyMatch(h -> h.getShareholderCreditCode().equals(investorCode));
-        if (!exists) {
-            holders.add(change);
-            shareholderState.put(investeeCode, holders);
+        // 2. 维护正向股东关系：给【被投资方】添加一个直接股东
+        List<EquityChange> holderList = shareholderState.get(investeeCode);
+        // 空则初始化集合
+        if (holderList == null) {
+            holderList = new ArrayList<>();
+        }
+        // 去重：避免同一个股东重复加入列表
+        boolean alreadyExist = holderList.stream()
+                .anyMatch(item -> item.getShareholderCreditCode().equals(investorCode));
+        if (!alreadyExist) {
+            holderList.add(change);
+            // 回写到状态
+            shareholderState.put(investeeCode, holderList);
         }
 
-        // -------------------- 3. 存储反向依赖（核心！绝不二次构建） --------------------
-        Set<String> reverseSet = reverseInvestState.get(investorCode);
-        if (reverseSet == null) reverseSet = new HashSet<>();
-        reverseSet.add(investeeCode);
-        reverseInvestState.put(investorCode, reverseSet);
+        // 3. 维护下游关联关系【核心关键】
+        // 关系：investorCode(投资方) 投资了 investeeCode(被投资方)
+        // 所以：投资方的下游列表，要加入被投资方
+        Set<String> downstreamSet = downstreamState.get(investorCode);
+        if (downstreamSet == null) {
+            downstreamSet = new HashSet<>();
+        }
+        downstreamSet.add(investeeCode);
+        // 回写到下游状态
+        downstreamState.put(investorCode, downstreamSet);
 
-        // -------------------- 4. 标记刷新：自己 + 所有上游 --------------------
-        markRefresh(investeeCode);
-        findUpstreamAndMark(investeeCode);
+        // 4. 递归向下标记刷新：当前投资方变更，所有下游企业全部要刷新股权树
+        markDownstreamRefresh(investorCode);
 
-        // 触发刷新
-        ctx.timerService().registerProcessingTimeTimer(System.currentTimeMillis() + 10);
+        // 5. 注册定时器：延迟统一触发构建输出，微批合并，避免频繁计算
+        long timerTs = System.currentTimeMillis() + DELAY_MS;
+        ctx.timerService().registerProcessingTimeTimer(timerTs);
     }
 
-    // ==================== 定时器：只刷新【变更链】，不遍历全量 ====================
-    @Override
-    public void onTimer(long timestamp, OnTimerContext ctx, Collector<CompanyNode> out) throws Exception {
-        Set<String> refreshCodes = new HashSet<>();
-        for (String code : needRefreshState.keys()) {
-            refreshCodes.add(code);
-        }
-        needRefreshState.clear();
+    // ======================== 递归方法一：向下游递归标记所有需要刷新的企业 ========================
+    /**
+     * 逻辑方向：自上而下
+     * 示例：张三 -> 杭州公司 -> 上海公司 -> 集团公司
+     * 张三变更：
+     *  1. 先标记张三自己需要刷新
+     *  2. 找到张三的下游【杭州公司】，标记并递归
+     *  3. 找到杭州的下游【上海公司】，标记并递归
+     *  4. 找到上海的下游【集团公司】，标记并递归
+     *  整条链路全部加入待刷新队列
+     */
+    private void markDownstreamRefresh(String currentCode) throws Exception {
+        // 第一步：先把自己标记为需要刷新
+        needRefreshState.put(currentCode, true);
 
-        // 只输出变更的公司！！！
-        for (String code : refreshCodes) {
-            CompanyNode tree = buildTree(code, 1.0D, new HashSet<>());
-            out.collect(tree);
-        }
-    }
-
-    // ==================== 递归构建股权树（无状态遍历） ====================
-    private CompanyNode buildTree(String code, double ratio, Set<String> path) throws Exception {
-        CompanyNode node = new CompanyNode();
-        node.setCompanyCode(code);
-        node.setCompanyName(companyNameState.get(code));
-        node.setRatio(ratio);
-
-        // 防环 + 深度限制
-        if (path.contains(code) || path.size() >= MAX_DEPTH) {
-            return node;
-        }
-
-        Set<String> newPath = new HashSet<>(path);
-        newPath.add(code);
-
-        // 只查当前公司股东（O(1)）
-        List<EquityChange> shareholders = shareholderState.get(code);
-        if (shareholders == null) return node;
-
-        for (EquityChange eq : shareholders) {
-            CompanyNode child = buildTree(
-                    eq.getShareholderCreditCode(),
-                    eq.getRatio(),
-                    newPath
-            );
-            node.getShareholders().add(child);
-        }
-
-        return node;
-    }
-
-    // ==================== 核心：递归查找上游（只走反向依赖，不遍历全量） ====================
-    private void findUpstreamAndMark(String code) throws Exception {
-        Set<String> upstreamList = reverseInvestState.get(code);
-        if (upstreamList == null || upstreamList.isEmpty()) {
+        // 第二步：获取当前企业所有直接下游公司
+        Set<String> downstreamList = downstreamState.get(currentCode);
+        // 没有下游，递归终止（出口条件，防止无限递归）
+        if (downstreamList == null || downstreamList.isEmpty()) {
             return;
         }
 
-        for (String up : upstreamList) {
-            markRefresh(up);
-            findUpstreamAndMark(up); // 继续向上找，整条链都刷新
+        // 第三步：遍历每个下游，继续递归向下标记
+        for (String downCode : downstreamList) {
+            markDownstreamRefresh(downCode);
         }
     }
 
-    // ==================== 标记需要刷新 ====================
-    private void markRefresh(String code) throws Exception {
-        needRefreshState.put(code, true);
+    // ======================== 定时器触发：批量构建并输出股权树 ========================
+    @Override
+    public void onTimer(long timestamp, OnTimerContext ctx, Collector<CompanyNode> out) throws Exception {
+        // 1. 取出所有待刷新的企业编码
+        Set<String> refreshCompanySet = new HashSet<>();
+        for (String code : needRefreshState.keys()) {
+            refreshCompanySet.add(code);
+        }
+        // 2. 清空待刷新队列，准备下一轮接收变更
+        needRefreshState.clear();
+
+        // 3. 只遍历需要刷新的企业，逐个构建完整股权树输出
+        // 优势：绝不遍历全量企业，性能极高
+        for (String code : refreshCompanySet) {
+            // 递归构建当前企业的完整股权穿透树
+            CompanyNode treeNode = buildTree(code, 1.0D, new HashSet<>());
+            out.collect(treeNode);
+        }
+    }
+
+    // ======================== 递归方法二：向下递归构建完整股权穿透树 ========================
+    /**
+     * @param companyCode 当前要构建树的企业编码
+     * @param ratio 当前企业对上一级的持股比例
+     * @param path 已访问过的企业路径，用于防环路（A→B→A 循环持股）
+     *
+     * 逻辑方向：自上而下
+     * 从当前企业开始，递归找自己的每一个股东，一直挖到无股东/自然人为止
+     * 同时做两层保护：环路检测 + 最大深度限制，防止栈溢出和死循环
+     */
+    private CompanyNode buildTree(String companyCode, double ratio, Set<String> path) throws Exception {
+        // 初始化树节点
+        CompanyNode node = new CompanyNode();
+        node.setCompanyCode(companyCode);
+        // O(1) 获取企业名称
+        node.setCompanyName(companyNameState.get(companyCode));
+        // 设置持股比例
+        node.setRatio(ratio);
+
+        // 递归终止条件1：当前节点已经在路径中，出现循环持股，直接截断
+        // 递归终止条件2：超过最大穿透深度99层，直接截断
+        if (path.contains(companyCode) || path.size() >= MAX_DEPTH) {
+            return node;
+        }
+
+        // 新建路径集合：避免不同递归分支共享路径，互相干扰
+        Set<String> newPath = new HashSet<>(path);
+        // 记录当前节点到访问路径中
+        newPath.add(companyCode);
+
+        // 获取当前企业的所有直接股东
+        List<EquityChange> shareholderList = shareholderState.get(companyCode);
+        // 没有股东，递归终止
+        if (shareholderList == null || shareholderList.isEmpty()) {
+            return node;
+        }
+
+        // 遍历每一个直接股东，递归构建子节点树
+        for (EquityChange item : shareholderList) {
+            CompanyNode childNode = buildTree(
+                    item.getShareholderCreditCode(),  // 子节点编码（股东编码）
+                    item.getRatio(),                 // 子节点持股比例
+                    newPath                          // 传递已访问路径
+            );
+            // 加入当前节点的股东子列表
+            node.getShareholders().add(childNode);
+        }
+
+        return node;
     }
 }

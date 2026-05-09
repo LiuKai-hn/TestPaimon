@@ -1,8 +1,6 @@
 package com.qcc.app;
 
 
-import com.qcc.func.EquityTreeProcess;
-import com.qcc.func.FinalEquityTreeProcess;
 import com.qcc.func.FinalEquityTreeProcessV2;
 import com.qcc.pojo.CompanyNode;
 import com.qcc.pojo.EquityChange;
@@ -12,8 +10,6 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.source.SourceFunction;
-
-import java.util.concurrent.TimeUnit;
 
 /**
  * 股权穿透 主程序 + 多场景测试用例
@@ -31,12 +27,19 @@ public class EquityPenetrationMain {
         // ======================
         DataStream<EquityChange> source = env.addSource(new SourceFunction<EquityChange>() {
             @Override
-            public void run(SourceContext<EquityChange> ctx) {
+            public void run(SourceContext<EquityChange> ctx) throws InterruptedException {
                 ctx.collect(new EquityChange("ZHANG", "张三", "HANGZHOU", "杭州XX科技", 0.6, System.currentTimeMillis()));
                 ctx.collect(new EquityChange("LI", "李四", "HANGZHOU", "杭州XX科技", 0.4, System.currentTimeMillis()));
                 ctx.collect(new EquityChange("HANGZHOU", "杭州XX科技", "SHANGHAI", "上海XX贸易", 0.7, System.currentTimeMillis()));
 
-                try { TimeUnit.SECONDS.sleep(1); } catch (Exception e) {}
+                // ====================== 关键：等待 3 秒！让定时器触发完成 ======================
+                Thread.sleep(3000);
+                // ==================== 关键验证：杭州新增王五 ====================
+                // 这条数据 = 杭州发生变更 → 看上海会不会自动刷新
+                ctx.collect(new EquityChange("WANGWU", "王五", "HANGZHOU", "杭州XX科技有限公司", 0.2, System.currentTimeMillis()));
+
+                // 再等1秒，确保定时器触发
+                Thread.sleep(1000);
             }
             @Override
             public void cancel() {}
